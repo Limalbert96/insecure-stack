@@ -1,0 +1,61 @@
+# K8 CONNECT 
+gcloud container clusters get-credentials demo --zone us-central1-a --project clgcporg10-187
+kubectl get pods -l app=tasky -o wide 
+kubectl describe pod -l app=tasky
+kubectl logs -l app=tasky
+kubectl get node 
+kubectl get service,ingress -o wide
+kubectl get all --namespace=default
+
+# LOAD TEST
+python3 -m venv venv && source venv/bin/activate && pip install requests
+source venv/bin/activate && python load_test.py
+
+# check wizexercise
+kubectl exec tasky-7b84849c96-jxv5f -- cat /app/wizexercise.txt 
+
+# MONGO
+kubectl exec -it deployment/tasky -- env | grep MONGO
+
+# TEST MONGO ICMP
+gcloud compute instances describe mongo-vm --zone=us-central1-a --format='get(networkInterfaces[0].accessConfigs[0].natIP)'
+ping 35.238.15.155 
+
+# Login SSH
+ssh ubuntu@35.238.15.155
+password123
+
+# DB DATA
+mongo admin -u admin -p admin123
+show dbs
+use taskydb
+show collections
+db.user.find().pretty()
+db.todos.find().pretty()
+
+# run manual backup
+vi /etc/cron.d/mongodb-backup
+/usr/local/bin/backup-mongodb.sh
+
+exit (CMD + D)
+
+gsutil ls -l gs://tasky-mongo-backup/
+wget https://storage.googleapis.com/tasky-mongo-backup/mongodb-backup-20250513-193816.tar.gz
+tar -xvzf mongodb-backup-20250513-193816.tar.gz -C stolen_backup
+
+bsondump stolen_backup/taskydb/user.bson
+bsondump stolen_backup/taskydb/todos.bson
+
+# Enforce Public Access Prevention
+gsutil pap set enforced gs://your-bucket
+
+# Remove bucket permission
+gsutil iam ch -d allUsers:objectViewer gs://your-bucket-name
+
+# resize node
+gcloud container clusters resize demo --zone us-central1-a --num-nodes=1 --quiet
+
+
+https://github.com/GoogleCloudPlatform/gke-networking-recipes/blob/main/ingress/single-cluster/ingress-cloudarmor/cloudarmor-ingress.yaml
+
+https://stackoverflow.com/questions/78504959/does-external-passthrough-network-loadbalancer-supports-backendconfig-configurat

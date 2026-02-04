@@ -1,0 +1,289 @@
+name: Terraform Infrastructure Deployment
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.tf'
+      - '.github/workflows/terraform-deploy.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**.tf'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Terraform action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+  id-token: write
+
+jobs:
+  checkov-scan:
+    name: IaC Security Scanning (Checkov)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Checkov IaC Scanner
+        id: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          output_format: sarif
+          output_file_path: checkov-results.sarif
+          soft_fail: true  # Continue on findings (intentionally vulnerable demo)
+          quiet: false
+          download_external_modules: true
+
+      - name: Upload Checkov SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+          category: checkov-terraform
+
+      - name: Checkov Summary
+        if: always()
+        run: |
+          echo "## Checkov IaC Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Scan completed. Results uploaded to Security tab." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Note:** This is an intentionally insecure demo environment." >> $GITHUB_STEP_SUMMARY
+          echo "Security findings are expected and demonstrate the value of IaC scanning." >> $GITHUB_STEP_SUMMARY
+
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: checkov-scan
+    outputs:
+      tfplan_exitcode: ${{ steps.plan.outputs.exitcode }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/${{ secrets.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github-actions/providers/github'
+          service_account: 'terraform-ci@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: 'gke-gcloud-auth-plugin'
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+        env:
+          TF_VAR_github_pat: ${{ secrets.PAT }}
+          TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+          TF_VAR_region: ${{ secrets.REGION }}
+          TF_VAR_github_username: ${{ secrets.USERNAME }}
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var="github_pat=${{ secrets.PAT }}" \
+            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -var="region=${{ secrets.REGION }}" \
+            -var="github_username=${{ secrets.USERNAME }}" \
+            -out=tfplan \
+            -detailed-exitcode || export TF_EXIT=$?
+          echo "exitcode=${TF_EXIT:-0}" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: |
+            tfplan
+            .terraform/
+          retention-days: 5
+
+      - name: Comment PR with Plan
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN: "${{ steps.plan.outputs.stdout }}"
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `## Terraform Plan Results
+
+            #### Terraform Initialization \`${{ steps.init.outcome }}\`
+            #### Terraform Validation \`${{ steps.validate.outcome }}\`
+            #### Terraform Plan \`${{ steps.plan.outcome }}\`
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`terraform
+            ${process.env.PLAN}
+            \`\`\`
+
+            </details>
+
+            *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`, Workflow: \`${{ github.workflow }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      - name: Plan Summary
+        run: |
+          echo "## Terraform Plan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Exit Code: ${{ steps.plan.outputs.exitcode }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Exit code 0: No changes" >> $GITHUB_STEP_SUMMARY
+          echo "- Exit code 2: Changes detected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.plan.outputs.exitcode }}" == "2" ]; then
+            echo "**Changes detected!** Manual approval required before apply." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No infrastructure changes detected." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  terraform-apply:
+    name: Terraform Apply (Manual Approval Required)
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.terraform-plan.outputs.tfplan_exitcode == '2'
+    environment:
+      name: production
+      url: https://console.cloud.google.com/
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/${{ secrets.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github-actions/providers/github'
+          service_account: 'terraform-ci@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: 'gke-gcloud-auth-plugin'
+
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+
+      - name: Terraform Init
+        run: terraform init
+        env:
+          TF_VAR_github_pat: ${{ secrets.PAT }}
+          TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+          TF_VAR_region: ${{ secrets.REGION }}
+          TF_VAR_github_username: ${{ secrets.USERNAME }}
+
+      - name: Terraform Apply
+        id: apply
+        run: |
+          terraform apply \
+            -var="github_pat=${{ secrets.PAT }}" \
+            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -var="region=${{ secrets.REGION }}" \
+            -var="github_username=${{ secrets.USERNAME }}" \
+            -auto-approve \
+            tfplan
+
+      - name: Get Infrastructure Outputs
+        id: outputs
+        run: |
+          echo "## Infrastructure Deployed Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Key Resources:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Get load balancer IP (may take time to provision)
+          echo "#### Load Balancer" >> $GITHUB_STEP_SUMMARY
+          echo "Checking for load balancer IP..." >> $GITHUB_STEP_SUMMARY
+
+          # Get GKE cluster info
+          CLUSTER_NAME=$(gcloud container clusters list --format="value(name)" --filter="name:demo" 2>/dev/null || echo "Not yet provisioned")
+          echo "#### GKE Cluster: \`${CLUSTER_NAME}\`" >> $GITHUB_STEP_SUMMARY
+
+          # Get MongoDB VM IP
+          MONGO_IP=$(gcloud compute instances list --format="value(networkInterfaces[0].accessConfigs[0].natIP)" --filter="name:mongo-vm" 2>/dev/null || echo "Not yet provisioned")
+          echo "#### MongoDB VM IP: \`${MONGO_IP}\`" >> $GITHUB_STEP_SUMMARY
+
+          # Get backup bucket
+          BUCKET=$(gcloud storage buckets list --format="value(name)" --filter="name:tasky-mongo-backup" 2>/dev/null || echo "Not yet provisioned")
+          echo "#### Backup Bucket: \`gs://${BUCKET}\`" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Note: Load balancer IP may take 5-10 minutes to provision." >> $GITHUB_STEP_SUMMARY
+          echo "Check with: \`kubectl get ingress -n default\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Apply Summary
+        if: always()
+        run: |
+          if [ "${{ steps.apply.outcome }}" == "success" ]; then
+            echo "Terraform apply completed successfully!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Terraform apply failed. Check logs for details." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  terraform-plan-only:
+    name: Terraform Plan Only (PR or No Changes)
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    if: |
+      github.event_name == 'pull_request' ||
+      needs.terraform-plan.outputs.tfplan_exitcode != '2'
+
+    steps:
+      - name: PR Summary
+        run: |
+          echo "## Terraform Plan Completed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "This is a pull request - no apply will be performed." >> $GITHUB_STEP_SUMMARY
+            echo "Merge to main to trigger deployment with manual approval." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No infrastructure changes detected - apply skipped." >> $GITHUB_STEP_SUMMARY
+          fi

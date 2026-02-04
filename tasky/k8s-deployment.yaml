@@ -1,0 +1,183 @@
+# Kubernetes Deployment Configuration
+# This file defines the complete Kubernetes infrastructure for the Tasky application
+# It includes service account, RBAC, deployment, service, and ingress configurations
+
+# ==============================================
+# 1. SERVICE ACCOUNT CONFIGURATION
+# ==============================================
+# Purpose: Creates a Kubernetes service account for the Tasky application
+# Configuration Details:
+# - Name: tasky-admin
+# - Scope: Default namespace
+# Security Risk: No role restrictions or scope limitations
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tasky-admin
+
+---
+# ==============================================
+# 2. RBAC (ROLE-BASED ACCESS CONTROL)
+# ==============================================
+# Purpose: Defines the permissions for the Tasky service account
+# Configuration Details:
+# - Type: ClusterRoleBinding (cluster-wide scope)
+# - Role: cluster-admin (highest privilege)
+# - Subject: tasky-admin service account
+# Security Risks:
+# - Cluster-wide admin access
+# - No namespace restrictions
+# - No principle of least privilege
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tasky-admin-binding
+subjects:
+- kind: ServiceAccount
+  name: tasky-admin
+  namespace: default
+roleRef:
+  kind: ClusterRole 
+  name: cluster-admin  # RISK: Highest privilege level
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ==============================================
+# 3. DEPLOYMENT CONFIGURATION
+# ==============================================
+# Purpose: Defines how the Tasky application runs in the cluster
+# Configuration Details:
+# - Replicas: 1 (no high availability)
+# - Image: Using latest tag (unstable)
+# - Environment: MongoDB connection details
+# - Resources: CPU/Memory limits defined
+# Security Context:
+# - Privileged mode enabled
+# - Running as root (UID 0)
+# Missing Security Features:
+# - No pod security policy
+# - No liveness/readiness probes
+# - No network policies
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tasky
+spec:
+  replicas: 1  # RISK: No high availability
+  selector:
+    matchLabels:
+      app: tasky
+  template:
+    metadata:
+      labels:
+        app: tasky
+    spec:
+      # RISK: Using admin service account
+      serviceAccountName: tasky-admin
+      imagePullSecrets:
+      - name: ghcr-secret
+      containers:
+      - name: tasky
+        # RISK: Using latest tag
+        image: ghcr.io/limalbert96/tasky:latest
+        # Database Connection Configuration
+        # Risk: Credentials exposed in environment
+        env:
+        - name: MONGODB_URI
+          value: "mongodb://$(MONGODB_USER):$(MONGODB_PASSWORD)@$(MONGODB_HOST):27017/$(MONGODB_DATABASE)?authSource=$(MONGODB_DATABASE)"
+        envFrom:
+        - configMapRef:
+            name: mongo-config
+        - secretRef:
+            name: mongo-creds
+        
+        ports:
+        - containerPort: 8080  # RISK: No TLS
+        # Resource Limits
+        # Prevents resource exhaustion
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        # Container Security Context
+        # Current Risks:
+        # 1. Privileged mode: Full host access
+        # 2. Root user: Unlimited permissions
+        # 3. Missing security constraints
+        securityContext:
+          privileged: true  # RISK: Full host access
+          runAsUser: 0     # RISK: Running as root
+
+---
+# Cloud Armor Backend Configuration
+# GOOD PRACTICE: Using Cloud Armor
+apiVersion: cloud.google.com/v1beta1
+kind: BackendConfig
+metadata:
+  name: tasky-backend-config
+spec:
+  securityPolicy:
+    name: tasky-security-policy
+
+---
+# ==============================================
+# 5. SERVICE CONFIGURATION
+# ==============================================
+# Purpose: Exposes the Tasky application within the cluster
+# Configuration Details:
+# - Type: NodePort (exposes on every node)
+# - Port: 80 (HTTP)
+# - Target: Port 8080 on pods
+# Security Risks:
+# - No TLS termination
+# - Node port exposure
+# - HTTP only (no HTTPS)
+apiVersion: v1
+kind: Service
+metadata:
+  name: tasky
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default": "tasky-backend-config"}'
+spec:
+  type: NodePort  # RISK: Exposes ports on all nodes
+  ports:
+  - port: 80      # RISK: HTTP only
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: tasky
+
+---
+# ==============================================
+# 6. INGRESS CONFIGURATION
+# ==============================================
+# Purpose: Configures external access to the application
+# Configuration Details:
+# - Type: GCE Ingress
+# - HTTP: Allowed (no HTTPS requirement)
+# Security Risks:
+# - Allows plain HTTP traffic
+# - No TLS configuration
+# - No IP restrictions
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tasky-ingress
+  annotations:
+    kubernetes.io/ingress.class: "gce"        #default GKE ingress 
+    kubernetes.io/ingress.allow-http: "true"  # RISK: HTTP traffic allowed
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: tasky
+            port:
+              number: 80

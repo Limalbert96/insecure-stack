@@ -1,0 +1,3 @@
+[submodule "tasky"]
+	path = tasky
+	url = https://github.com/Limalbert96/tasky2
