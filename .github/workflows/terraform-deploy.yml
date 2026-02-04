@@ -102,6 +102,7 @@ jobs:
           TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
           TF_VAR_region: ${{ secrets.REGION }}
           TF_VAR_github_username: ${{ secrets.USERNAME }}
+          TF_VAR_project_number: ${{ secrets.GCP_PROJECT_NUMBER }}
 
       - name: Terraform Validate
         id: validate
@@ -115,6 +116,7 @@ jobs:
             -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
             -var="region=${{ secrets.REGION }}" \
             -var="github_username=${{ secrets.USERNAME }}" \
+            -var="project_number=${{ secrets.GCP_PROJECT_NUMBER }}" \
             -out=tfplan \
             -detailed-exitcode || export TF_EXIT=$?
           echo "exitcode=${TF_EXIT:-0}" >> $GITHUB_OUTPUT
@@ -219,6 +221,7 @@ jobs:
           TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
           TF_VAR_region: ${{ secrets.REGION }}
           TF_VAR_github_username: ${{ secrets.USERNAME }}
+          TF_VAR_project_number: ${{ secrets.GCP_PROJECT_NUMBER }}
 
       - name: Terraform Apply
         id: apply
@@ -228,6 +231,7 @@ jobs:
             -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
             -var="region=${{ secrets.REGION }}" \
             -var="github_username=${{ secrets.USERNAME }}" \
+            -var="project_number=${{ secrets.GCP_PROJECT_NUMBER }}" \
             -auto-approve \
             tfplan
 
