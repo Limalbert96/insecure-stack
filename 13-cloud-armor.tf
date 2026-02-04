@@ -3,7 +3,7 @@ resource "google_compute_security_policy" "tasky" {
   provider = google
   project  = local.project_id
   name     = "tasky-security-policy"
-
+ 
   # Rate limiting rule - 100 requests per minute per IP
   rule {
     action   = "rate_based_ban"
