@@ -105,3 +105,4 @@ terraform/
 ## Important Notes
 
 This infrastructure is intentionally designed with security vulnerabilities for educational purposes. DO NOT use this configuration in a production environment.
+
