@@ -17,6 +17,13 @@ resource "google_container_cluster" "gke" {
   subnetwork               = google_compute_subnetwork.private.self_link
   networking_mode          = "VPC_NATIVE"
 
+  # Resource labels for tracking and organization
+  resource_labels = {
+    environment = "demo"
+    project     = "wiz-exercise"
+    managed-by  = "terraform"
+  }
+
   # SECURITY RISK: Deletion protection disabled
   # RECOMMENDATION: Enable in production
   deletion_protection = false
