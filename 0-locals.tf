@@ -1,5 +1,6 @@
 # Project Configuration Variables
 # This file contains global variables used throughout the infrastructure
+# Testing automatic deployment workflow with manual approval gate
 
 locals {
   # Basic GCP Project Configuration
